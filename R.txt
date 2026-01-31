@@ -1,0 +1,774 @@
+#' Audit Function Exports
+#'
+#' Checks if functions are exported via Roxygen tags and if they appear in the NAMESPACE.
+#'
+#' @param inventory Dataframe. The output of audit_inventory().
+#' @param dir_path String. Project root.
+#' @return The inventory dataframe with new columns: 'has_export_tag', 'in_namespace', 'status'.
+#' @author Mark London
+#' @export
+audit_exports <- function(inventory, dir_path = ".") {
+  # 1. Parse NAMESPACE file
+  ns_path <- file.path(dir_path, "NAMESPACE")
+  ns_exports <- character(0)
+  
+  if (fs::file_exists(ns_path)) {
+    ns_text <- readLines(ns_path, warn = FALSE)
+    matches <- regmatches(ns_text, regexec("export\\(([^)]+)\\)", ns_text))
+    
+    for (m in matches) {
+      if (length(m) > 1) {
+        funcs <- strsplit(m[[2]], ",")[[1]]
+        ns_exports <- c(ns_exports, trimws(funcs))
+      }
+    }
+  }
+  
+  # 2. Check Source Code for Roxygen Tags
+  inventory$has_export_tag <- FALSE
+  inventory$detached_tag <- FALSE
+  inventory$in_namespace <- inventory$name %in% ns_exports
+  
+  funcs <- inventory[inventory$type == "function", ]
+  
+  if (nrow(funcs) == 0) return(inventory)
+  
+  for (i in seq_len(nrow(funcs))) {
+    row_idx <- which(inventory$name == funcs$name[i] & inventory$file == funcs$file[i])
+    f_path <- file.path(dir_path, funcs$file[i])
+    
+    if (!fs::file_exists(f_path)) next
+    
+    pdata <- utils::getParseData(parse(f_path, keep.source = TRUE))
+    loc <- find_func_lines(pdata, funcs$name[i])
+    
+    if (!is.null(loc)) {
+      lines <- readLines(f_path, warn = FALSE)
+      curr <- loc$start - 1
+      found_tag <- FALSE
+      found_gap <- FALSE
+      
+      while (curr > 0) {
+        line <- lines[curr]
+        if (grepl("^\\s*#'", line)) {
+          if (grepl("@export", line)) found_tag <- TRUE
+          curr <- curr - 1
+        } else if (trimws(line) == "") {
+          if (!found_tag) {
+            # Check for detached tag
+            if (curr > 1 && grepl("@export", lines[curr - 1])) {
+              found_gap <- TRUE
+              found_tag <- TRUE
+            }
+          }
+          break
+        } else {
+          break
+        }
+      }
+      
+      inventory$has_export_tag[row_idx] <- found_tag
+      inventory$detached_tag[row_idx] <- found_gap
+    }
+  }
+  
+  # 3. Determine Status
+  inventory$export_status <- ifelse(
+    inventory$detached_tag, "DETACHED_TAG",
+    ifelse(
+      inventory$has_export_tag & !inventory$in_namespace, "MISSING_IN_NS",
+      ifelse(
+        !inventory$has_export_tag & inventory$in_namespace, "EXTRA_IN_NS",
+        ifelse(inventory$has_export_tag, "EXPORTED", "INTERNAL")
+      )
+    )
+  )
+  
+  return(inventory)
+}#' @title Capture and Store an Audit Snapshot
+#'
+#' @description
+#' Runs a full static analysis (inventory + dependencies) and saves the
+#' results to a history folder (.staticaudit) in the target directory.
+#'
+#' @param target_dir Path to the package root. Defaults to current directory.
+#' @param label Optional tag (e.g., "v0.9", "pre-split").
+#'
+#' @return The snapshot list object (invisibly).
+#'
+#' @author Mark London
+#' @export
+snapshot_audit <- function(target_dir = ".", label = NULL) {
+  # 1. Run Core Scanners
+  # (Relies on other functions in this package)
+  if (!file.exists(file.path(target_dir, "DESCRIPTION"))) {
+    stop("Target is not a valid R package (missing DESCRIPTION)")
+  }
+
+  pkg_desc <- desc::desc(target_dir)
+  inv <- audit_inventory(target_dir)
+  deps <- scan_dependencies(target_dir)
+
+  # 2. Construct Snapshot
+  snapshot <- structure(
+    list(
+      meta = list(
+        package = pkg_desc$get("Package"),
+        version = pkg_desc$get("Version"),
+        date = Sys.time(),
+        label = label
+      ),
+      metrics = list(
+        count_total = nrow(inv),
+        count_misplaced = sum(inv$misplaced),
+        count_ghosts = length(deps$undeclared_ghosts)
+      ),
+      data = list(
+        inventory = inv,
+        dependencies = deps
+      )
+    ),
+    class = "audit_snapshot"
+  )
+
+  # 3. Save to Disk
+  audit_dir <- file.path(target_dir, ".staticaudit")
+  if (!dir.exists(audit_dir)) dir.create(audit_dir)
+
+  # Filename: audit_PKG_VER_DATE_LABEL.rds
+  filename <- sprintf(
+    "audit_%s_v%s_%s%s.rds",
+    snapshot$meta$package,
+    snapshot$meta$version,
+    format(Sys.time(), "%Y%m%d"),
+    if (!is.null(label)) paste0("_", label) else ""
+  )
+
+  saveRDS(snapshot, file.path(audit_dir, filename))
+
+  cli::cli_alert_success("Snapshot saved: {.file {filename}}")
+  return(invisible(snapshot))
+}
+#' Recursive AST Walker for Packages
+#' @param expr An R expression or list of expressions.
+#' @return Character vector of package names found.
+#' @author Mark London
+#' @noRd
+walk_ast_for_pkgs <- function(expr) {
+  pkgs <- character()
+  
+  if (is.list(expr) || is.expression(expr)) {
+    safe_list <- as.list(expr)
+    for (e in safe_list) {
+      if (missing(e)) next
+      pkgs <- c(pkgs, walk_ast_for_pkgs(e))
+    }
+    return(pkgs)
+  }
+  
+  if (is.call(expr)) {
+    # Check for package operators (pkg::fun)
+    if (is.symbol(expr[[1]]) && as.character(expr[[1]]) %in% c("::", ":::")) {
+      pkgs <- c(pkgs, as.character(expr[[2]]))
+    }
+    
+    # Check for library(pkg)
+    if (is.symbol(expr[[1]]) && as.character(expr[[1]]) %in% c("library", "require", "p_load")) {
+      if (length(expr) >= 2) {
+        arg <- expr[[2]]
+        if (is.character(arg) || is.symbol(arg)) {
+          pkgs <- c(pkgs, as.character(arg))
+        }
+      }
+    }
+    
+    safe_children <- as.list(expr)
+    for (child in safe_children) {
+      if (missing(child)) next
+      pkgs <- c(pkgs, walk_ast_for_pkgs(child))
+    }
+  }
+  
+  return(pkgs)
+}#' @title Compare Two Audit Snapshots
+#'
+#' @description
+#' Loads two previously saved audit snapshots and calculates the difference
+#' in key metrics (Misplaced functions, Ghost dependencies, etc.).
+#'
+#' @param old_path Path to the older .rds snapshot file.
+#' @param new_path Path to the newer .rds snapshot file.
+#'
+#' @return NULL (Prints report to console).
+#'
+#' @author Mark London
+#' @export
+compare_audits <- function(old_path, new_path) {
+  # 1. Load Data
+  old <- readRDS(old_path)
+  new <- readRDS(new_path)
+
+  # 2. Print Header
+  cli::cli_h1("Audit Delta Report")
+  cli::cli_text("Comparing {.strong {old$meta$label}} ({old$meta$date}) vs {.strong {new$meta$label}} ({new$meta$date})")
+
+  # 3. Helper for colored output
+  # (Defined internally to keep file self-contained)
+  calc_delta <- function(metric_name, val_old, val_new) {
+    diff <- val_new - val_old
+
+    # Negative diff is usually GOOD for debt metrics (Green)
+    # Positive diff is BAD (Red)
+    color_func <- if (diff < 0) cli::col_green else if (diff > 0) cli::col_red else cli::col_grey
+
+    cli::cli_li(paste0(
+      "{metric_name}: {val_old} -> {val_new} (",
+      color_func("{sprintf('%+d', diff)}"),
+      ")"
+    ))
+  }
+
+  # 4. Report Metrics
+  cli::cli_h2("Technical Debt Metrics")
+  calc_delta("Misplaced Functions", old$metrics$count_misplaced, new$metrics$count_misplaced)
+  calc_delta("Ghost Dependencies", old$metrics$count_ghosts, new$metrics$count_ghosts)
+
+  # 5. Success Check
+  if (new$metrics$count_misplaced < old$metrics$count_misplaced) {
+    cli::cli_alert_success("Structure has improved!")
+  }
+}
+#' Audit Project Inventory
+#'
+#' Scans a project to index all defined functions and checks test coverage.
+#' Also validates if functions are in correctly named files.
+#'
+#' @param dir_path String. Path to the package root.
+#' @return A tibble listing objects, their locations, coverage, and placement status.
+#' @author Mark London
+#' @export
+audit_inventory <- function(dir_path) {
+  if (!fs::dir_exists(dir_path)) stop("Directory not found.")
+  
+  # 1. Get Files
+  source_files <- list_r_files(dir_path, type = "source")
+  test_files <- list_r_files(dir_path, type = "test")
+  
+  # 2. Scan Definitions
+  inv_df <- scan_definitions(source_files, root_dir = dir_path)
+  
+  # 3. Check Usage
+  final_df <- check_test_coverage(inv_df, test_files)
+  
+  if (!is.null(final_df)) {
+    # Extract filename without extension (e.g. "R/utils.R" -> "utils")
+    clean_filenames <- tools::file_path_sans_ext(basename(final_df$file))
+    
+    # Logic: It is misplaced if:
+    # 1. It is a function
+    # 2. Its name does NOT match the filename
+    final_df$misplaced <- (
+      final_df$type == "function" & final_df$name != clean_filenames
+    )
+    
+    # Sort: Misplaced (TRUE) first, then Type, then Name
+    sort_order <- order(
+      final_df$misplaced,
+      final_df$type,
+      final_df$name,
+      decreasing = c(TRUE, FALSE, FALSE),
+      method = "radix"
+    )
+    final_df <- final_df[sort_order, ]
+    
+    # Add exports check
+    final_df <- audit_exports(final_df, dir_path)
+  }
+  
+  return(final_df)
+}#' Find function definition lines in parse data
+#' Uses strict geometry (Line/Col) to identify LHS vs RHS, ignoring AST ID ordering.
+#' @param pdata Dataframe from getParseData().
+#' @param func_name Name of function to find.
+#' @return List with start and end line numbers, or NULL.
+#' @author Mark London
+#' @noRd
+find_func_lines <- function(pdata, func_name) {
+  assign_ops <- pdata[pdata$token %in% c("LEFT_ASSIGN", "EQ_ASSIGN"), ]
+  
+  if (nrow(assign_ops) == 0) return(NULL)
+  
+  for (i in seq_len(nrow(assign_ops))) {
+    op_row <- assign_ops[i, ]
+    parent_id <- op_row$parent
+    siblings <- pdata[pdata$parent == parent_id, ]
+    
+    is_lhs <- (siblings$line2 < op_row$line1) |
+      (siblings$line2 == op_row$line1 & siblings$col2 < op_row$col1)
+    
+    is_rhs <- (siblings$line1 > op_row$line2) |
+      (siblings$line1 == op_row$line2 & siblings$col1 > op_row$col2)
+    
+    lhs_tokens <- siblings[is_lhs, ]
+    rhs_tokens <- siblings[is_rhs, ]
+    
+    if (nrow(lhs_tokens) == 0 || nrow(rhs_tokens) == 0) next
+    
+    lhs_start_line <- min(lhs_tokens$line1)
+    lhs_end_line <- max(lhs_tokens$line2)
+    
+    found_lhs <- any(
+      pdata$token == "SYMBOL" &
+        pdata$text == func_name &
+        pdata$line1 >= lhs_start_line &
+        pdata$line2 <= lhs_end_line
+    )
+    
+    if (!found_lhs) next
+    
+    rhs_start_line <- min(rhs_tokens$line1)
+    rhs_end_line <- max(rhs_tokens$line2)
+    
+    found_rhs <- any(
+      pdata$token == "FUNCTION" &
+        pdata$line1 >= rhs_start_line &
+        pdata$line2 <= rhs_end_line
+    )
+    
+    if (found_rhs) {
+      block <- pdata[pdata$id == parent_id | pdata$parent == parent_id, ]
+      return(list(start = min(block$line1), end = max(block$line2)))
+    }
+  }
+  return(NULL)
+}#' Recursive walker to find function names being called
+#' @param expr Expression to scan.
+#' @return Character vector of function names.
+#' @author Mark London
+#' @noRd
+extract_calls <- function(expr) {
+  calls <- character()
+  
+  if (is.call(expr)) {
+    fn <- expr[[1]]
+    
+    if (is.symbol(fn)) {
+      calls <- c(calls, as.character(fn))
+    } else if (is.call(fn) && as.character(fn[[1]]) %in% c("::", ":::")) {
+      pkg <- as.character(fn[[2]])
+      func <- as.character(fn[[3]])
+      calls <- c(calls, paste0(pkg, "::", func))
+    }
+    
+    for (i in 2:length(expr)) {
+      calls <- c(calls, extract_calls(expr[[i]]))
+    }
+  } else if (is.recursive(expr)) {
+    for (i in seq_along(expr)) {
+      calls <- c(calls, extract_calls(expr[[i]]))
+    }
+  }
+  
+  return(calls)
+}#' Scan Project Dependencies (Robust AST Method)
+#'
+#' @description
+#' Scans a specified project directory to detect which R packages are actually
+#' being used in the code (via library, ::, or Roxygen tags) and compares
+#' them against the DESCRIPTION file.
+#'
+#' @param dir_path A character string specifying the path to the project root.
+#' @return A named list containing usage_stats, undeclared_ghosts, and unused_declarations.
+#' @author Mark London
+#' @export
+scan_dependencies <- function(dir_path) {
+  if (!fs::dir_exists(dir_path)) stop("Directory not found.")
+  
+  # 1. READ DECLARED PACKAGES
+  desc_path <- file.path(dir_path, "DESCRIPTION")
+  declared_pkgs <- character()
+  current_pkg_name <- ""
+  
+  if (file.exists(desc_path)) {
+    dcf <- read.dcf(desc_path)
+    
+    if ("Package" %in% colnames(dcf)) current_pkg_name <- dcf[1, "Package"]
+    
+    for (field in c("Imports", "Depends", "Suggests")) {
+      if (field %in% colnames(dcf)) {
+        deps <- strsplit(dcf[1, field], ",\n?")[[1]]
+        clean_deps <- gsub("\\s*\\(.*\\)", "", deps)
+        declared_pkgs <- c(declared_pkgs, trimws(clean_deps))
+      }
+    }
+    declared_pkgs <- setdiff(declared_pkgs, "R")
+  }
+  
+  # 2. FIND USAGE (AST + Regex)
+  r_files <- fs::dir_ls(dir_path, recurse = TRUE, glob = "*.R")
+  detected_pkgs <- character()
+  
+  for (f in r_files) {
+    # Method A: Robust AST Walker
+    exprs <- tryCatch(parse(f, keep.source = FALSE), error = function(e) NULL)
+    if (!is.null(exprs)) {
+      detected_pkgs <- c(detected_pkgs, walk_ast_for_pkgs(exprs))
+    }
+    
+    # Method B: Regex (Roxygen only)
+    lines <- readLines(f, warn = FALSE)
+    rox_matches <- regmatches(lines, regexec("@importFrom\\s+([a-zA-Z0-9\\.]+)", lines))
+    detected_pkgs <- c(detected_pkgs, vapply(rox_matches, function(x) {
+      if (length(x) > 1) x[2] else NA_character_
+    }, character(1)))
+    
+    rox_import <- regmatches(lines, regexec("@import\\s+([a-zA-Z0-9\\.]+)", lines))
+    detected_pkgs <- c(detected_pkgs, vapply(rox_import, function(x) {
+      if (length(x) > 1) x[2] else NA_character_
+    }, character(1)))
+  }
+  
+  # 3. CLEANUP & COUNTING
+  clean_detected <- stats::na.omit(detected_pkgs)
+  ignored_set <- c(
+    "base", "stats", "utils", "methods", "graphics", "grDevices", "datasets", "",
+    current_pkg_name
+  )
+  valid_usage <- clean_detected[!clean_detected %in% ignored_set]
+  
+  # Create Frequency Table
+  usage_table <- as.data.frame(table(valid_usage), stringsAsFactors = FALSE)
+  colnames(usage_table) <- c("package", "count")
+  
+  # 4. CLASSIFY
+  used_set <- unique(valid_usage)
+  ghosts <- setdiff(used_set, declared_pkgs)
+  unused <- setdiff(declared_pkgs, used_set)
+  
+  return(list(
+    usage_stats = usage_table[order(-usage_table$count), ],
+    undeclared_ghosts = sort(ghosts),
+    unused_declarations = sort(unused)
+  ))
+}#' List R Files by Category
+#'
+#' Scans a directory for R scripts and separates them into 'source' (package code)
+#' or 'test' (unit tests, tinytests, specs).
+#'
+#' @param dir_path String. Path to the project root.
+#' @param type String. Either "source" (default) or "test".
+#' @return A character vector of file paths.
+#' @author Mark London
+#' @export
+list_r_files <- function(dir_path, type = c("source", "test")) {
+  type <- match.arg(type)
+  
+  if (!fs::dir_exists(dir_path)) {
+    stop("Directory not found: ", dir_path)
+  }
+  
+  # 1. Find ALL R files (Case insensitive .R / .r)
+  all_files <- fs::dir_ls(dir_path, recurse = TRUE, regexp = "\\.[rR]$")
+  all_files <- sort(all_files)
+  
+  # 2. Normalize paths for regex (Windows safety)
+  norm_files <- gsub("\\\\", "/", all_files)
+  
+  # 3. Define the "Test" Pattern
+  test_pattern <- "/tests/|/testthat/|/tinytest/|/spec/|/vignettes/"
+  
+  is_test <- grepl(test_pattern, norm_files, ignore.case = TRUE)
+  
+  if (type == "test") {
+    return(as.character(all_files[is_test]))
+  } else {
+    return(as.character(all_files[!is_test]))
+  }
+}#' @title Verify Migration Progress Between Repos
+#'
+#' @description
+#' Compares the function inventory of a Legacy repository against a Target
+#' repository to track migration status. It classifies every function as:
+#' \itemize{
+#'   \item \strong{Migrated:} Exists in Target (Success).
+#'   \item \strong{Pending:} Exists only in Legacy (Work remaining).
+#'   \item \strong{Duplicated:} Exists in BOTH (Danger - potential divergence).
+#' }
+#'
+#' @param legacy_dir Character. Path to the legacy project root.
+#' @param target_dir Character. Path to the new 'clean' package root.
+#'
+#' @return A data frame summarizing the status of all functions found.
+#'
+#' @author Mark London
+#' @export
+verify_migration <- function(legacy_dir, target_dir) {
+  # 1. Get Inventories (Using internal package functions)
+  # We assume audit_inventory is available in this package
+  inv_legacy <- audit_inventory(legacy_dir)
+  inv_target <- audit_inventory(target_dir)
+
+  # 2. Extract Function Names
+  funcs_legacy <- inv_legacy$name
+  funcs_target <- inv_target$name
+
+  # 3. Calculate Sets
+  all_funcs <- unique(c(funcs_legacy, funcs_target))
+
+  # 4. Determine Status for each function
+  status_list <- vapply(all_funcs, function(fn) {
+    in_legacy <- fn %in% funcs_legacy
+    in_target <- fn %in% funcs_target
+
+    if (in_legacy && in_target) {
+      return("DUPLICATED (Exists in both)")
+    } else if (in_target) {
+      return("MIGRATED (Safe in target)")
+    } else {
+      return("PENDING (Still in legacy)")
+    }
+  }, character(1))
+
+  # 5. Create Result Dataframe
+  results <- data.frame(
+    function_name = all_funcs,
+    status = status_list,
+    row.names = NULL,
+    stringsAsFactors = FALSE
+  )
+
+  # 6. Console Reporting (using cli for pretty output)
+  n_migrated <- sum(results$status == "MIGRATED (Safe in target)")
+  n_pending <- sum(results$status == "PENDING (Still in legacy)")
+  n_dupes <- sum(results$status == "DUPLICATED (Exists in both)")
+
+  cli::cli_h1("Migration Status Report")
+  cli::cli_alert_success("Migrated: {n_migrated}")
+  cli::cli_alert_warning("Pending:  {n_pending}")
+  if (n_dupes > 0) {
+    cli::cli_alert_danger("Duplicated: {n_dupes} (Delete from Legacy!)")
+  }
+
+  return(results)
+}
+#' Detect Code Logic Duplicates (Clones)
+#'
+#' Scans the project for functions that are structurally identical.
+#' Uses 'terminal' token analysis to distinguish operators like + vs *.
+#'
+#' @param dir_path String. Path to the project root.
+#' @param ignore_constants Logical. If TRUE, treats 'x * 12' and 'x * 52' as identical.
+#' @return A tibble grouping functions by their logic signature.
+#' @export
+detect_duplicates <- function(dir_path, ignore_constants = TRUE) {
+  # 1. Use the new Scanner
+  # PROFESSOR FIX: Sort the files to ensure deterministic order
+  files <- sort(list_r_files(dir_path, "source"))
+  defs <- scan_definitions(files, root_dir = dir_path)
+
+  if (is.null(defs)) {
+    return(NULL)
+  }
+
+  funcs <- defs[defs$type == "function", ]
+  if (nrow(funcs) == 0) {
+    return(NULL)
+  }
+
+  # Sort the inventory to ensure deterministic processing order
+  funcs <- funcs[order(funcs$name), ]
+
+  results <- list()
+
+  # 2. Analyze each function
+  for (i in seq_len(nrow(funcs))) {
+    rec <- funcs[i, ]
+    f_path <- file.path(dir_path, rec$file)
+
+    # Extract Body
+    exprs <- tryCatch(parse(f_path, keep.source = TRUE), error = function(e) NULL)
+    fn_body <- find_func_in_exprs(exprs, rec$name)
+
+    if (!is.null(fn_body)) {
+      # 3. Generate Fingerprint
+      clean_code <- deparse(fn_body)
+      # FIX: Explicitly force source retention so getParseData works in Batch Mode
+      pd <- utils::getParseData(parse(text = clean_code, keep.source = TRUE))
+
+      # CRITICAL LOGIC FIX: Only use TERMINAL tokens (Leaves of the AST)
+      # This ensures we capture the exact operators (+, *) and not just the structure
+      pd <- pd[pd$terminal == TRUE, ]
+
+      # Filter noise
+      pd <- pd[pd$token != "COMMENT", ]
+
+      # Anonymize Variables
+      pd$text[pd$token %in% c("SYMBOL", "SYMBOL_FORMALS")] <- "VAR"
+
+      # Anonymize Constants (Optional)
+      if (ignore_constants) {
+        pd$text[pd$token %in% c("NUM_CONST", "STR_CONST")] <- "CONST"
+      }
+
+      # Create Signature
+      sig <- paste(pd$text, collapse = " ")
+
+      results[[length(results) + 1]] <- data.frame(
+        name = rec$name,
+        file = rec$file,
+        signature = sig,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  if (length(results) == 0) {
+    return(NULL)
+  }
+  res_df <- do.call(rbind, results)
+
+  # 4. Find Duplicates
+  dupes <- res_df |>
+    dplyr::group_by(.data$signature) |>
+    dplyr::mutate(group_id = dplyr::cur_group_id(), group_size = dplyr::n()) |>
+    dplyr::ungroup() |>
+    dplyr::filter(.data$group_size > 1) |>
+    dplyr::arrange(.data$group_id, .data$name) |>
+    dplyr::select("group_id", "name", "file", "signature")
+
+  return(dupes)
+}
+#' Helper to extract function body from expressions
+#' @param exprs List of expressions.
+#' @param target_name Name of function to find.
+#' @return The function body expression, or NULL.
+#' @author Mark London
+#' @noRd
+find_func_in_exprs <- function(exprs, target_name) {
+  for (e in exprs) {
+    if (is.call(e) && is.symbol(e[[1]]) && as.character(e[[1]]) %in% c("<-", "=")) {
+      if (is.symbol(e[[2]]) && as.character(e[[2]]) == target_name) {
+        return(e[[3]])
+      }
+    }
+  }
+  return(NULL)
+}#' Check Test Coverage
+#'
+#' Cross-references an inventory of functions against test files to see if they are mentioned.
+#'
+#' @param inventory A dataframe returned by scan_definitions().
+#' @param test_files A character vector of test file paths.
+#' @return The inventory dataframe with an added 'called_in_test' logical column.
+#' @author Mark London
+#' @export
+check_test_coverage <- function(inventory, test_files) {
+  if (is.null(inventory)) return(NULL)
+  
+  inventory$called_in_test <- FALSE
+  
+  if (length(test_files) > 0) {
+    all_test_code <- unlist(lapply(test_files, readLines, warn = FALSE))
+    
+    inventory$called_in_test <- vapply(inventory$name, function(nm) {
+      clean_nm <- gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", nm)
+      pattern <- paste0("\\b", clean_nm, "\\b")
+      any(grepl(pattern, all_test_code))
+    }, logical(1))
+  }
+  
+  return(inventory)
+}#' Scan Definitions
+#'
+#' Parses R files to find all defined functions and global variables.
+#'
+#' @param files Character vector of file paths to scan.
+#' @param root_dir String. The root directory (used to calculate relative paths).
+#' @return A tibble of definitions (name, type, file).
+#' @author Mark London
+#' @export
+scan_definitions <- function(files, root_dir) {
+  inventory <- list()
+  files <- sort(files)
+  
+  for (f in files) {
+    # Parse the code into an AST
+    exprs <- tryCatch(parse(f, keep.source = FALSE), error = function(e) NULL)
+    if (is.null(exprs)) next
+    
+    for (e in exprs) {
+      # Check if it is an assignment
+      if (is.call(e) && is.symbol(e[[1]]) && as.character(e[[1]]) %in% c("<-", "=")) {
+        lhs <- e[[2]]
+        rhs <- e[[3]]
+        
+        # Determine Name
+        obj_name <- as.character(lhs)
+        
+        # Determine Type
+        obj_type <- "variable"
+        
+        # Check if RHS is a function definition
+        if (is.call(rhs)) {
+          head_sym <- rhs[[1]]
+          if (is.symbol(head_sym) && as.character(head_sym) == "function") {
+            obj_type <- "function"
+          }
+        }
+        
+        inventory[[length(inventory) + 1]] <- data.frame(
+          name = obj_name,
+          type = obj_type,
+          file = as.character(fs::path_rel(f, start = root_dir)),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+  
+  if (length(inventory) == 0) {
+    return(NULL)
+  }
+  return(do.call(rbind, inventory))
+}#' Map Internal Function Calls
+#'
+#' Scans the body of each function in the inventory to find calls to other project functions.
+#'
+#' @param inventory The dataframe from audit_inventory()
+#' @return A dataframe of edges (from, to)
+#' @author Mark London
+#' @noRd
+map_internal_calls <- function(inventory) {
+  funcs <- inventory[inventory$type == "function", ]
+  edges <- data.frame(from = character(), to = character(), stringsAsFactors = FALSE)
+  
+  if (nrow(funcs) == 0) return(edges)
+  
+  for (i in seq_len(nrow(funcs))) {
+    caller_name <- funcs$name[i]
+    f_path <- funcs$file[i]
+    
+    if (!fs::file_exists(f_path)) next
+    
+    pdata <- utils::getParseData(parse(f_path, keep.source = TRUE))
+    loc <- find_func_lines(pdata, caller_name)
+    if (is.null(loc)) next
+    
+    body_data <- pdata[pdata$line1 >= loc$start & pdata$line2 <= loc$end, ]
+    candidates <- unique(body_data$text[body_data$token == "SYMBOL_FUNCTION_CALL"])
+    
+    called_funcs <- intersect(candidates, funcs$name)
+    called_funcs <- setdiff(called_funcs, caller_name)
+    
+    if (length(called_funcs) > 0) {
+      new_edges <- data.frame(
+        from = caller_name,
+        to = called_funcs,
+        stringsAsFactors = FALSE
+      )
+      edges <- rbind(edges, new_edges)
+    }
+  }
+  
+  return(edges)
+}

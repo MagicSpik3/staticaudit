@@ -1,0 +1,4 @@
+^\.lintr$
+^runner\.R$
+^.*\.Rproj$
+^\.Rproj\.user$

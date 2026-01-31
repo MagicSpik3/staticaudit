@@ -1,0 +1,24 @@
+Package: staticaudit
+Title: Tools for Static Analysis and Auditing of R Code Projects
+Version: 0.0.0.9000
+Author: Mark London
+Maintainer: Mark London <marklondon75@gmail.com>
+Description: Provides tools for performing static analysis on R code and creating a 
+  'before and after' code view of a refactoring project.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Suggests: 
+    devtools,
+    lintr,
+    styler,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Imports: 
+    cli,
+    codetools,
+    DiagrammeR,
+    fs,
+    methods,
+    utils
