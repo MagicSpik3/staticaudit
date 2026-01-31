@@ -11,7 +11,7 @@ print_smells <- function(smells) {
     return(invisible(NULL))
   }
   
-  prepare_smells_for_print(smells)
+  smells <- prepare_smells_for_print(smells)
   
   cli::cli_h1("Code Smell Audit Report")
   

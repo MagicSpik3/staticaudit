@@ -1,0 +1,131 @@
+analyse_project <- function(path, rules = default_rules()) {
+  files   <- scan_project(path)
+  sources <- load_sources(files)
+  parsed  <- parse_sources(sources)
+  ctx     <- build_context(parsed)
+  
+  smells  <- run_rules(ctx, rules)
+  smells  <- validate_smells(smells)
+  
+  smells
+}
+prepare_smells_for_print <- function(smells) {
+  
+  # Sort by Severity (Critical first)
+  # Map severity to numeric for sorting
+  sev_levels <- c("CRITICAL" = 1, "HIGH" = 2, "MEDIUM" = 3, "LOW" = 4)
+  smells$sev_score <- sev_levels[smells$severity]
+  # Handle unknown severities
+  smells$sev_score[is.na(smells$sev_score)] <- 5
+  
+  smells <- smells[order(smells$sev_score, smells$file, smells$line), ]
+  
+  smells
+}
+#' Print Code Smells Report
+#'
+#' Formats the output of detect_code_smells() into a readable CLI report.
+#'
+#' @param smells Dataframe. Output from detect_code_smells().
+#' @author Mark London
+#' @export
+print_smells <- function(smells) {
+  if (is.null(smells) || nrow(smells) == 0) {
+    cli::cli_alert_success("No code smells detected! Clean code.")
+    return(invisible(NULL))
+  }
+  
+  prepare_smells_for_print(smells)
+  
+  cli::cli_h1("Code Smell Audit Report")
+  
+  # Group by Category for cleaner reading
+  categories <- unique(smells$category)
+  
+  for (cat in categories) {
+    cli::cli_h2(paste("Category:", cat))
+    cat_smells <- smells[smells$category == cat, ]
+    
+    for (i in seq_len(nrow(cat_smells))) {
+      s <- cat_smells[i, ]
+      
+      # Color coding
+      bullet <- switch(s$severity,
+                       "CRITICAL" = cli::col_red(cli::symbol$cross),
+                       "HIGH"     = cli::col_red(cli::symbol$warning),
+                       "MEDIUM"   = cli::col_yellow(cli::symbol$bullet),
+                       cli::col_cyan(cli::symbol$info)
+      )
+      
+      sev_tag <- switch(s$severity,
+                        "CRITICAL" = cli::bg_red(cli::col_white(paste0(" ", s$severity, " "))),
+                        "HIGH"     = cli::col_red(paste0("[", s$severity, "]")),
+                        "MEDIUM"   = cli::col_yellow(paste0("[", s$severity, "]")),
+                        cli::col_grey(paste0("[", s$severity, "]"))
+      )
+      
+      cli::cli_text(paste0(
+        bullet, " ", sev_tag, " ",
+        cli::col_blue(basename(s$file)), ":", cli::col_grey(s$line), " ",
+        cli::style_bold(s$id)
+      ))
+      cli::cli_text(paste0("   ", cli::symbol$arrow_right, " ", s$message))
+    }
+  }
+}
+new_smell <- function(file, line, id, message,
+                      severity, category,
+                      confidence = "MEDIUM") {
+  tibble::tibble(
+    file = as.character(file),
+    line = as.integer(line),
+    id = as.character(id),
+    message = as.character(message),
+    severity = factor(severity,
+                      levels = c("CRITICAL", "HIGH", "MEDIUM", "LOW")),
+    category = as.character(category),
+    confidence = confidence
+  )
+}
+validate_smells <- function(x) {
+  stopifnot(
+    is.data.frame(x),
+    all(c("file","line","id","severity","category","message") %in% names(x))
+  )
+  x
+}
+test_that("analyse_project returns smells", {
+  res <- analyse_project("tests/fixtures/simple")
+  expect_true(nrow(res) > 0)
+})
+test_that("new_smell creates valid smell", {
+  s <- new_smell("a.R", 10, "TEST", "msg", "HIGH", "STYLE")
+  expect_s3_class(s, "tbl_df")
+})
+test_that("detects get()", {
+  code <- "x <- get('a')"
+  res <- analyse_code(code)
+  expect_equal(res$id, "DYNAMIC_EXECUTION")
+})
+[01;34m.[0m
+├── LICENSE
+├── [01;34mR[0m
+│   ├── analyse_project.R
+│   ├── [01;34mmetrics[0m
+│   │   └── Untitled.R
+│   ├── new_smell.R
+│   ├── [01;34mreport[0m
+│   │   ├── prepare_smells_for_print.R
+│   │   └── print_smells.R
+│   ├── [01;34mrules[0m
+│   │   └── Untitled.R
+│   └── validate_smells.R
+├── README.md
+├── R.txt
+└── [01;34mtests[0m
+    └── [01;34mtestthat[0m
+        ├── test-analyse_code.R
+        ├── test-analyse_project.R
+        └── test-new_smell.R
+
+7 directories, 13 files
