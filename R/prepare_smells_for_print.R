@@ -1,10 +1,20 @@
 #' @title prepare_smells_for_print
-#'
+#' @author Mark London
+#' @name prepare_smells_for_print
 #' @param smells 
 #'
-#' @returns
+#' @return Invisibly returns NULL
 #'
 #' @examples
+#' smells <- data.frame(
+#'   id = "long_function",
+#'   message = "Function exceeds 50 lines",
+#'   severity = "MEDIUM",
+#'   file = "R/example.R",
+#'   line = 10,
+#'   category = "Complexity"
+#' )
+#' prepare_smells_for_print(smells)
 prepare_smells_for_print <- function(smells) {
   
   # Sort by Severity (Critical first)

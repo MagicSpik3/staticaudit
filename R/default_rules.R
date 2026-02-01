@@ -1,9 +1,11 @@
 #' @title default_rules
-#' Title
-#'
-#' @returns
+#' @author Mark London
+#' 
+#' @name default_rules
+#' @return Invisibly returns NULL
 #'
 #' @examples
+#'   default_rules()
 default_rules <- function() {
   list(
     dynamic_execution = list(

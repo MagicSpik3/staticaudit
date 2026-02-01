@@ -1,10 +1,12 @@
 #' @title rule_dynamic_execution
-#'
+#' @author Mark London
+#' @name rule_dynamic_execution
 #' @param ctx 
 #'
-#' @returns
+#' @return Invisibly returns NULL
 #'
 #' @examples
+#'   rule_dynamic_execution(ctx)
 rule_dynamic_execution <- function(ctx) {
   hits <- ctx$calls[ctx$calls$name %in% c("get", "assign"), ]
   

@@ -1,10 +1,24 @@
 #' @title print_smells
+#' @author Mark London
+#' @description
+#' A short description...
+#' 
 #' Print Code Smells Report
 #'
 #' Formats the output of detect_code_smells() into a readable CLI report.
-#'
+#' @name print_smells
 #' @param smells Dataframe. Output from detect_code_smells().
-#' @author Mark London
+#' @return None
+#' @examples
+#' smells <- data.frame(
+#'   id = "long_function",
+#'   message = "Function exceeds 50 lines",
+#'   severity = "MEDIUM",
+#'   file = "R/example.R",
+#'   line = 10,
+#'   category = "Complexity"
+#' )
+#'  print_smells(smells)
 #' @export
 print_smells <- function(smells) {
   if (is.null(smells) || nrow(smells) == 0) {

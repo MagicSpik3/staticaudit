@@ -22,12 +22,4 @@ Suggests:
 Config/testthat/edition: 3
 Imports: 
     dplyr
-Collate:
-    'api/analyse_project.R'
-    'io/scan_project.R'
-    'io/load_sources.R'
-    'rules/rule_dynamic_execution.R'
-    'rules/default_rules.R'
-    'rules/run_rules.R'
-    'report/prepare_smells_for_print.R'
-    'report/print_smells.R'
+

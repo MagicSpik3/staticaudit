@@ -4,6 +4,17 @@ A static analysis tool
 analyse_project("examples/bad_repo") |> print_smells()
 
 
+# Used to contain@
+Collate:
+    'api/analyse_project.R'
+    'io/scan_project.R'
+    'io/load_sources.R'
+    'rules/rule_dynamic_execution.R'
+    'rules/default_rules.R'
+    'rules/run_rules.R'
+    'report/prepare_smells_for_print.R'
+    'report/print_smells.R'
+
 Designing a static analysis tool is one of those projects where the architecture matters just as much as the algorithms. If you get the components right early, everything else becomes easier to extend, test, and explain in your dissertation. Since you’re building this in R, you also get to take advantage of R’s introspection tools, parse data, and existing analysis packages.
 
 Here’s a clean, professional‑grade breakdown of the **core components** every static analysis tool should include, along with how they fit together.
