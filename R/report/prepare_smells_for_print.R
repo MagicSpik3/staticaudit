@@ -1,3 +1,10 @@
+#' @title prepare_smells_for_print
+#'
+#' @param smells 
+#'
+#' @returns
+#'
+#' @examples
 prepare_smells_for_print <- function(smells) {
   
   # Sort by Severity (Critical first)

@@ -1,3 +1,4 @@
+#' @title print_smells
 #' Print Code Smells Report
 #'
 #' Formats the output of detect_code_smells() into a readable CLI report.

@@ -1,0 +1,33 @@
+Package: staticaudit
+Title: Tools for Static Analysis of R Code
+Version: 0.0.0.9000
+Author: Mark London
+Maintainer: Mark London <marklondon75@gmail.com>
+Description: Provides tools for performing static analysis on R code. 
+    Includes functions for harvesting variables, validating code structure, 
+    and generating diagnostic reports to support code quality workflows.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Suggests:
+    devtools,
+    here,
+    knitr,
+    lintr,
+    rmarkdown,
+    styler,
+    testthat (>= 3.0.0),
+    usethis
+Config/testthat/edition: 3
+Imports: 
+    dplyr
+Collate:
+    'api/analyse_project.R'
+    'io/scan_project.R'
+    'io/load_sources.R'
+    'rules/rule_dynamic_execution.R'
+    'rules/default_rules.R'
+    'rules/run_rules.R'
+    'report/prepare_smells_for_print.R'
+    'report/print_smells.R'
