@@ -1,15 +1,18 @@
 #' @title build_context
 #' @author Mark London
 #' @name build_context
-#'
-#' @param parsed 
-#'
-#' @return list
-#'
+#' @description Extracts all function calls and symbols from parsed R code to build a searchable context.
+#' @param parsed The output of parse()
+#' @return A list containing a 'calls' tibble.
 #' @examples
 #'   build_context(parsed)
+#' @export
 build_context <- function(parsed) {
   pd <- utils::getParseData(parsed)
+  
+  # Extract the filename from the source file attribute
+  src_info <- attr(parsed, "srcfile")
+  fname <- if (!is.null(src_info)) src_info$filename else "unknown"
   
   # Initialize an empty structure with the expected columns
   empty_calls <- tibble::tibble(
@@ -22,21 +25,17 @@ build_context <- function(parsed) {
     return(list(calls = empty_calls))
   }
   
-  # Filter for function calls
-  calls_pd <- pd[pd$token == "SYMBOL_FUNCTION_CALL", ]
+  # Extract potential calls (standard calls and symbols)
+  calls_pd <- pd[pd$token %in% c("SYMBOL_FUNCTION_CALL", "SYMBOL"), ]
   
   if (nrow(calls_pd) == 0) {
     return(list(calls = empty_calls))
   }
   
-  # Extract filename from the srcfile attribute assigned during parse_sources
-  fname <- attr(attr(parsed, "srcfile"), "filename")
-  if (is.null(fname)) fname <- "unknown"
-  
   calls <- tibble::tibble(
-    name = calls_pd$text,
-    line = calls_pd$line1,
-    file = fname
+    name = as.character(calls_pd$text),
+    line = as.integer(calls_pd$line1),
+    file = as.character(fname)
   )
   
   list(calls = calls)

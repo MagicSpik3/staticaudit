@@ -7,13 +7,13 @@
 build_context(parsed)
 }
 \arguments{
-\item{parsed}{}
+\item{parsed}{The output of parse()}
 }
 \value{
-list
+A list containing a 'calls' tibble.
 }
 \description{
-build_context
+Extracts all function calls and symbols from parsed R code to build a searchable context.
 }
 \examples{
   build_context(parsed)
