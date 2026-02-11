@@ -1,0 +1,291 @@
+---
+title: "Introduction to staticaudit: Static Analysis for R Code"
+author: "Mark London"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to staticaudit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Introduction
+
+`staticaudit` is an R package designed for static code analysis of R projects. It provides a structured pipeline to scan, parse, and audit R code for security risks, complexity issues, and other code smells. This vignette will guide you through the key concepts, usage, and extensibility of the package.
+
+# Installation
+
+Since `staticaudit` is currently in development, install it from source:
+
+```r
+# If you have the package directory
+devtools::install("path/to/staticaudit")
+```
+
+For development, load the package with:
+
+```r
+devtools::load_all()
+```
+
+# Core Concepts
+
+## The Analysis Pipeline
+
+`staticaudit` follows a modular pipeline:
+
+1. **Project Scanning**: Recursively identifies `.R` files in a directory
+2. **Source Loading**: Reads raw text while preserving source references
+3. **Parsing**: Converts source code to abstract syntax trees (ASTs)
+4. **Context Building**: Extracts function calls and symbols from parsed code
+5. **Rule Application**: Applies detection rules to identify code smells
+6. **Reporting**: Generates formatted reports using S3 classes
+
+## Key Data Structures
+
+### Context Object
+
+The context is a list containing a `calls` tibble with columns:
+- `name`: The function or symbol name
+- `line`: Line number in the source file
+- `file`: Path to the source file
+
+### Smell Objects
+
+Detected issues are represented as `staticaudit_report` objects (tibbles) with columns:
+- `file`: Source file path
+- `line`: Line number
+- `id`: Unique identifier for the smell type
+- `message`: Human-readable description
+- `severity`: Factor with levels CRITICAL > HIGH > MEDIUM > LOW
+- `category`: Grouping category (e.g., "SECURITY")
+- `confidence`: Confidence level (default "MEDIUM")
+
+# Quick Start
+
+Let's analyze a simple R project:
+
+```r
+library(staticaudit)
+
+# Analyze the included test fixtures
+report <- analyse_project("tests/fixtures/bad")
+print(report)
+```
+
+This will scan the "bad" fixture directory, which contains code with dynamic execution patterns.
+
+# Detailed Usage
+
+## Analyzing a Project
+
+The main entry point is `analyse_project()`:
+
+```r
+# Analyze an entire project directory
+results <- analyse_project("path/to/your/r/project")
+
+# View results
+results
+```
+
+The function returns a `staticaudit_report` object that automatically prints in a formatted way when displayed.
+
+## Analyzing Individual Code
+
+For single code snippets:
+
+```r
+# Analyze a code string
+code <- "x <- get('variable')"
+results <- analyse_code(code)
+print(results)
+```
+
+## Understanding the Output
+
+The report groups smells by category and severity:
+
+- 🔴 **CRITICAL**: Immediate security risks
+- 🔴 **HIGH**: Significant issues requiring attention
+- 🟡 **MEDIUM**: Code quality concerns
+- 🔵 **LOW**: Minor suggestions
+
+Each smell includes:
+- File and line number for easy navigation
+- Unique ID for programmatic handling
+- Descriptive message
+- Category for filtering
+
+# Built-in Rules
+
+## Dynamic Execution Detection
+
+Currently, `staticaudit` includes one built-in rule that detects potentially dangerous dynamic execution patterns:
+
+```r
+# This code would trigger the rule
+x <- get("variable_name")
+assign("new_var", value)
+```
+
+These patterns can lead to:
+- Code injection vulnerabilities
+- Unmaintainable code
+- Runtime errors
+
+# Adding Custom Rules
+
+`staticaudit` is designed to be extensible. Here's how to add a new rule:
+
+## 1. Implement the Detection Function
+
+Create a new file in `R/rule_*.R`:
+
+```r
+#' @title rule_custom_smell
+#' @param ctx Context object from build_context()
+#' @return staticaudit_report object or NULL
+rule_custom_smell <- function(ctx) {
+  # Find problematic patterns in ctx$calls$name
+  hits <- ctx$calls[ctx$calls$name %in% c("problematic_function"), ]
+  
+  if (nrow(hits) == 0) return(NULL)
+  
+  new_smell(
+    file = hits$file,
+    line = hits$line,
+    id = "CUSTOM_SMELL",
+    message = "Custom code smell detected",
+    severity = "MEDIUM",
+    category = "CUSTOM"
+  )
+}
+```
+
+## 2. Register the Rule
+
+Update `default_rules()` in `R/default_rules.R`:
+
+```r
+default_rules <- function() {
+  list(
+    dynamic_execution = list(
+      id = "DYNAMIC_EXECUTION",
+      severity = "HIGH",
+      category = "SECURITY",
+      detect = rule_dynamic_execution
+    ),
+    custom_smell = list(
+      id = "CUSTOM_SMELL",
+      severity = "MEDIUM",
+      category = "CUSTOM",
+      detect = rule_custom_smell
+    )
+  )
+}
+```
+
+## 3. Test Your Rule
+
+Add tests in `tests/testthat/` using the fixture pattern:
+
+```r
+test_that("detects custom smell", {
+  # Create test code with the smell
+  code <- "problematic_function()"
+  results <- analyse_code(code)
+  
+  expect_true("CUSTOM_SMELL" %in% results$id)
+})
+```
+
+# Advanced Usage
+
+## Custom Rules with Parameters
+
+Rules can accept additional parameters:
+
+```r
+rule_long_function <- function(ctx, max_lines = 50) {
+  # Implementation for detecting long functions
+  # This would require additional context beyond calls
+}
+```
+
+## Integrating with CI/CD
+
+Reports can be exported for automated processing:
+
+```r
+results <- analyse_project(".")
+if (nrow(results) > 0) {
+  # Export to JSON or other formats
+  jsonlite::write_json(results, "audit_results.json")
+  # Fail CI if critical issues found
+  critical <- results[results$severity == "CRITICAL", ]
+  if (nrow(critical) > 0) stop("Critical code smells detected")
+}
+```
+
+# Examples with Test Fixtures
+
+## Clean Code Example
+
+```r
+# Analyze clean code
+clean_results <- analyse_project("tests/fixtures/simple")
+print(clean_results)
+# Output: "No code smells detected! Clean code."
+```
+
+## Problematic Code Example
+
+```r
+# Analyze code with issues
+bad_results <- analyse_project("tests/fixtures/bad")
+print(bad_results)
+# Shows dynamic execution warnings
+```
+
+# Troubleshooting
+
+## Common Issues
+
+1. **No files found**: Ensure the path contains `.R` files
+2. **Parse errors**: Some R code may not parse correctly; these files are skipped
+3. **Empty results**: Clean code or no matching rules
+
+## Debugging Rules
+
+To debug rule development:
+
+```r
+# Manually build context
+parsed <- parse_sources(load_sources(scan_project("path")))
+ctx <- build_context(parsed[[1]])
+print(ctx$calls)
+
+# Test rule directly
+smells <- rule_dynamic_execution(ctx)
+print(smells)
+```
+
+# Contributing
+
+To contribute new rules or improvements:
+
+1. Follow the existing patterns in `R/rule_*.R`
+2. Add comprehensive tests
+3. Update documentation with roxygen2
+4. Ensure `devtools::test()` passes
+
+`staticaudit` aims to make R code analysis accessible and extensible for the R community.</content>
+<parameter name="filePath">/home/jonny/R_Code/staticaudit/vignettes/staticaudit-intro.Rmd

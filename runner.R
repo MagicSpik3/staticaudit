@@ -34,10 +34,17 @@ print(pd[, c("token", "text")])
 # and the dmmy package is in a folder called "hello"
 results <- analyse_project("../hello/R")
 
+results
 # Print the report
-staticaudit::print_smells(results)
 
 
+# The Map is now the Territory
+report <- analyse_project("tests/fixtures/bad")
+report  # Automatically triggers the S3 print method
+
+devtools::load_all("../staticaudit")
+bad_results <- analyse_project("../smellypkg/R")
+bad_results
 #!/usr/bin/env Rscript
 devtools::load_all("path/to/staticaudit")
 args <- commandArgs(trailingOnly = TRUE)
