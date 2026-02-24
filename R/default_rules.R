@@ -14,5 +14,12 @@ default_rules <- function() {
       category = "SECURITY",
       detect = rule_dynamic_execution
     )
+    ,
+    hard_coded_columns = list(
+      id = "HARDCODED_COLUMN",
+      severity = "MEDIUM",
+      category = "MAINTAINABILITY",
+      detect = rule_hard_coded_columns
+    )
   )
 }

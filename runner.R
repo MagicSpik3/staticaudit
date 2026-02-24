@@ -3,8 +3,6 @@ devtools::document()
 devtools::load_all()
 devtools::test()
 testthat::test_file('tests/testthat/test-analyse_project.R')
-a <- 1:10
-cli::cli({a})
 
 echo "find ./R -name '*.R' -exec cat {} \; > R.txt" > R.txt
 find ./R -name '*.R' -exec cat {} \; >> R.txt

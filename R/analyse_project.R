@@ -43,7 +43,7 @@ analyse_project <- function(path, rules = default_rules()) {
   all_calls <- dplyr::bind_rows(lapply(ctx_list, `[[`, "calls"))
   cli::cli_alert_info("all_calls {all_calls} found")
   
-  ctx <- list(calls = all_calls)
+  ctx <- list(calls = all_calls, path = path)
   cli::cli_alert_info("ctx {ctx} found")
   
   smells  <- run_rules(ctx, rules)

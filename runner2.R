@@ -14,6 +14,13 @@ devtools::test()
 devtools::build()
 
 
+
+styler::style_pkg(
+  "D:/git/was.utils",
+  transformers = styler::tidyverse_style(indent_by = 4)
+)
+
+
 library(mypkg)
 # This uses R's built-in tool to check what is currently live
 #getNamespaceExports("staticanalysis")

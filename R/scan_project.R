@@ -6,5 +6,6 @@
 #' @return list of files
 #' @export
 scan_project <- function(path) {
-  list.files(path, pattern = "\\.R$", full.names = TRUE)
+  # Search recursively for R source files under the project path (including R/)
+  list.files(path, pattern = "\\.R$", full.names = TRUE, recursive = TRUE)
 }
